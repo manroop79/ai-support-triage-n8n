@@ -1,0 +1,1163 @@
+{
+  "name": "AI Support Triage",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "filters": {
+          "q": "=to:manroop1111+support@gmail.com is:unread -label:support-triaged"
+        }
+      },
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -320,
+        272
+      ],
+      "id": "862aca47-b75b-4654-bae1-1f77c5eb73f1",
+      "name": "Gmail Trigger",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "hE9ZFzPNPq5pX7D6",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You will receive a customer support email.\n\nTasks:\n1) Summarize in 2-3 sentences.\n2) Classify category: one of [\"bug\",\"feature\",\"billing\",\"question\",\"other\"].\n3) Extract entities: product, version, account (email or org) if present.\n4) Score severity: \"low\" | \"medium\" | \"high\" | \"critical\".\n5) Map priority: \"P3\"|\"P2\"|\"P1\" where P1≈critical/high.\n6) Create a short issue title (~12 words).\n\nReturn STRICT JSON:\n{\n\"title\": \"...\",\n\"summary\": \"...\",\n\"category\": \"...\",\n\"entities\": { \"product\": \"...\", \"version\": \"...\", \"account\": \"...\" },\n\"severity\": \"...\",\n\"priority\": \"...\",\n\"confidence\": 0.0-1.0\n}\n\nEmail metadata:\nFrom: {{$json.from}}\nSubject: {{$json.subject}}\nBody:\n{{$json.body}}\n",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are a support triage assistant. Output STRICT JSON only. Infer missing fields sensibly. Be concise but information-dense."
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.7,
+      "position": [
+        96,
+        272
+      ],
+      "id": "7c6173cc-b95e-4afb-a730-5ce25ff6048a",
+      "name": "Basic LLM Chain",
+      "retryOnFail": true,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4.1-mini"
+        },
+        "options": {
+          "responseFormat": "json_object"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        96,
+        496
+      ],
+      "id": "1b3c4315-1da8-46bb-939e-7bfb81a1f7d5",
+      "name": "OpenAI Chat Model",
+      "credentials": {
+        "openAiApi": {
+          "id": "oDvqhO53XALd6fnC",
+          "name": "OpenAi account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Pull model output\nlet raw = $json;\nif ($json.json) raw = $json.json;\nelse if ($json.response) raw = $json.response;\nelse if (typeof $json.text === 'string') { try { raw = JSON.parse($json.text); } catch(e) {} }\nelse if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch(e) { raw = {}; } }\n\nconst CATS = new Set(['bug','feature','billing','question','other']);\nconst SEVS = new Set(['low','medium','high','critical']);\n\nconst title = (raw?.title || 'Support request').toString().slice(0, 80).trim();\nconst category = CATS.has(raw?.category) ? raw.category : 'other';\nconst severity = SEVS.has(raw?.severity) ? raw.severity : 'medium';\nconst priority = ['P1','P2','P3'].includes(raw?.priority)\n? raw.priority\n: (severity === 'critical' || severity === 'high') ? 'P1' : (severity === 'medium' ? 'P2' : 'P3');\n\nconst triage = {\ntitle,\nsummary: (raw?.summary || '').toString(),\ncategory,\nentities: {\nproduct: raw?.entities?.product || '',\nversion: raw?.entities?.version || '',\naccount: raw?.entities?.account || '',\n},\nseverity,\npriority,\nconfidence: Math.max(0, Math.min(1, Number(raw?.confidence ?? 0.7))),\n};\n\n// bring back email metadata from the normalize node\nconst email = $item(0).$node['Normalize Email'].json;\n\n// Ensure required fields never empty\nif (!raw || typeof raw !== 'object') raw = {};\nif (!raw.title || !raw.summary) {\nraw.title = raw.title || ($json.subject ? `Support: ${$json.subject}` : 'Support request');\nraw.summary = raw.summary || ($json.body || '').slice(0, 280);\n}\n\nreturn {\n...triage,\nfrom: email.from,\nsubject: email.subject,\nthreadId: email.threadId,\nmessageId: email.messageId,\nreceivedAt: email.receivedAt,\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        272
+      ],
+      "id": "bf673106-ddae-47d7-bb69-85a473db052d",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const inJson = $json;\n\nconst html = inJson.textHtml || '';\nconst plain = inJson.textPlain || '';\nconst body = (plain && plain.trim()) ||\n(html && html.replace(/<[^>]+>/g, ' ').trim()) ||\n'';\n\nreturn {\nsubject: inJson.subject || '(no subject)',\nfrom: inJson.from || '',\nbody,\nthreadId: inJson.threadId || '',\nmessageId: inJson.id || inJson.messageId || '', // ✅ corrected line\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -112,
+        272
+      ],
+      "id": "6ed8519d-70de-47af-afda-09641722b5b5",
+      "name": "Normalize Email",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "owner": {
+          "__rl": true,
+          "value": "={{ $node[\"Set Constants (Global)\"].json[\"owner\"] }}",
+          "mode": "name"
+        },
+        "repository": {
+          "__rl": true,
+          "value": "={{ $node[\"Set Constants (Global)\"].json[\"repo\"] }}",
+          "mode": "name"
+        },
+        "title": "={{ $node[\"Prepare Github Issue\"].json[\"title\"] }}",
+        "body": "=**Summary** \n{{ $node[\"Prepare Github Issue\"].json[\"summary\"] }}\n\n**Category:** {{ $node[\"Prepare Github Issue\"].json[\"category\"] }}\n**Severity:** {{ $node[\"Prepare Github Issue\"].json[\"severity\"] }}\n**Priority:** {{ $node[\"Prepare Github Issue\"].json[\"priority\"] }}\n\n**Original Sender:** {{ $node[\"Prepare Github Issue\"].json[\"from\"] }}\n**Email Subject:** {{ $node[\"Prepare Github Issue\"].json[\"emailSubject\"] }}\n\n{{ $node[\"Prepare Github Issue\"].json[\"attachmentsMd\"] }}\n",
+        "labels": [
+          {
+            "label": "={{ $(\"Prepare Github Issue\").item.json[\"category\"] }}"
+          },
+          {
+            "label": "={{ $(\"Prepare Github Issue\").item.json[\"priority\"] }}"
+          },
+          {
+            "label": "={{ $(\"Prepare Github Issue\").item.json[\"severity\"] }}"
+          }
+        ],
+        "assignees": []
+      },
+      "type": "n8n-nodes-base.github",
+      "typeVersion": 1.1,
+      "position": [
+        3024,
+        272
+      ],
+      "id": "efd2d487-5728-4a1f-a0ad-cf47b2b24c17",
+      "name": "Create an issue",
+      "webhookId": "a4ab462f-1c0b-4c99-a54b-76ff5b7a3b01",
+      "retryOnFail": true,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "githubOAuth2Api": {
+          "id": "BpAzAilqFEGMZ05Y",
+          "name": "GitHub account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1nMM9EgXCVpBIT7zVeoO0DMP9RleAFOQfKKwQCzd7Yrk",
+          "mode": "list",
+          "cachedResultName": "AI Support Triage Log",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1nMM9EgXCVpBIT7zVeoO0DMP9RleAFOQfKKwQCzd7Yrk/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1nMM9EgXCVpBIT7zVeoO0DMP9RleAFOQfKKwQCzd7Yrk/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "messageId": "={{ $node[\"Normalize Email\"].json[\"messageId\"] }}",
+            "receivedAt": "={{ $now }}",
+            "from": "={{ $node[\"Normalize Email\"].json[\"from\"] || \"unknown\"}}",
+            "subject": "={{ $node[\"Normalize Email\"].json[\"subject\"] || (\"no subject\") }}",
+            "category": "={{ $node[\"Prepare Github Issue\"].json[\"category\"] || \"unclassifies\" }}",
+            "severity": "={{ $node[\"Prepare Github Issue\"].json[\"severity\"] || \"unknown\" }}",
+            "priority": "={{ $node[\"Prepare Github Issue\"].json[\"priority\"] || \"P3\" }}",
+            "issueNumber": "={{ $node[\"Create an issue\"].json[\"number\"] }}",
+            "issueUrl": "={{ $node[\"Create an issue\"].json[\"html_url\"] || \"open\" }}",
+            "status": "={{ $node[\"Create an issue\"].json[\"status\"] || \"open\" }}",
+            "attachments": "={{\n$node[\"Build Attachments Markdown (FALSE)\"].json[\"attachmentsMd\"]}}\n"
+          },
+          "matchingColumns": [
+            "messageId"
+          ],
+          "schema": [
+            {
+              "id": "messageId",
+              "displayName": "messageId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "receivedAt",
+              "displayName": "receivedAt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "from",
+              "displayName": "from",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "subject",
+              "displayName": "subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "severity",
+              "displayName": "severity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "priority",
+              "displayName": "priority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "issueNumber",
+              "displayName": "issueNumber",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "issueUrl",
+              "displayName": "issueUrl",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "attachments",
+              "displayName": "attachments",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        3232,
+        384
+      ],
+      "id": "2d570e6d-e0ef-4246-92f6-56e77f7fae66",
+      "name": "Append or update row in sheet",
+      "retryOnFail": true,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "6SGqhWjbVdAOZcRT",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Read all rows from the Google Sheets \"Get row(s) in sheet\" node\nconst rows = $items(\"Get row(s) in sheet\").map(i => i.json);\n\nconst now = new Date();\nconst ist = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));\nconst todayUTC = ist.toISOString().slice(0,10);\n\nconst todays = rows.filter(r => String(r.Timestamp || \"\").startsWith(todayUTC));\n\nconst groups = {};\nfor (const r of todays) {\n  const cat = r.Category || 'other';\n  const pri = r.Priority || 'P3';\n  if (!groups[cat]) groups[cat] = { P1:0, P2:0, P3:0, titles:[] };\n  if (Object.hasOwn(groups[cat], pri)) groups[cat][pri] += 1;\n  groups[cat].titles.push(r.Title || '(no title)');\n}\n\nlet summary = `📅 <b>Daily Support Digest</b> — ${todayUTC}<br/><br/>`;\nif (todays.length === 0) {\n  summary += `No tickets today.`;\n} else {\n  for (const cat of Object.keys(groups)) {\n    const g = groups[cat];\n    summary += `<b>${cat.toUpperCase()}</b><br/>`;\n    summary += `P1: ${g.P1} | P2: ${g.P2} | P3: ${g.P3}<br/>`;\n    summary += g.titles.map(t => `• ${t}`).join('<br/>');\n    summary += `<br/><br/>`;\n  }\n}\n\nreturn { json: { summary, total: todays.length } };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4304,
+        496
+      ],
+      "id": "b1fedbd6-02c5-416c-aa26-401e574dcb22",
+      "name": "Summarize Daily Tickets"
+    },
+    {
+      "parameters": {
+        "sendTo": "manroop1111@gmail.com",
+        "subject": "=Daily Support Digest - {{ $today }}",
+        "message": "={{ $node[\"Summarize Daily Tickets\"].json[\"summary\"] \n|| \"No tickets today.\"}}\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        4560,
+        496
+      ],
+      "id": "9c2d92a8-1e13-4652-98f0-20b290a345fc",
+      "name": "Send Daily Digest",
+      "webhookId": "90cc2a20-87fd-4e17-aef5-5e24c7d089f2",
+      "retryOnFail": true,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "hE9ZFzPNPq5pX7D6",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "bfb7dca0-75e2-445f-a45f-e8e1a73e6885",
+              "leftValue": "={{ $json.priority }}",
+              "rightValue": "P1",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3456,
+        384
+      ],
+      "id": "70bf7b1e-bcc6-45b2-8d04-f596c71d588d",
+      "name": "IF - Critical Priority"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1nMM9EgXCVpBIT7zVeoO0DMP9RleAFOQfKKwQCzd7Yrk",
+          "mode": "list",
+          "cachedResultName": "AI Support Triage Log",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1nMM9EgXCVpBIT7zVeoO0DMP9RleAFOQfKKwQCzd7Yrk/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1nMM9EgXCVpBIT7zVeoO0DMP9RleAFOQfKKwQCzd7Yrk/edit#gid=0"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        4032,
+        496
+      ],
+      "id": "b347ec7a-25e5-44a5-8747-7750aa0652be",
+      "name": "Get row(s) in sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "6SGqhWjbVdAOZcRT",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $node[\"Set Constants (Global)\"].json[\"alert_recipient\"] || \"manroop1111@gmail.com\" }}",
+        "subject": "=⚠️ p1: {{ $node[\"Prepare Github Issue\"].json[\"title\"] || $node[\"Normalize Email\"].json[\"subject\"] || \"Critical support ticket\" }}",
+        "message": "=<p><b>Critical ticket detected</b></p>\n<p><b>Title:</b> {{ $node[\"Prepare Github Issue\"].json[\"title\"] || $node[\"Normalize Email\"].json[\"subject\"] }}</p>\n<p><b>Category:</b> {{ $node[\"Prepare Github Issue\"].json[\"category\"] || \"unclassified\" }}</p>\n<p><b>Severity:</b> {{ $node[\"Prepare Github Issue\"].json[\"severity\"] || \"unknown\" }}</p>\n<p><b>Priority:</b> {{ $node[\"Prepare Github Issue\"].json[\"priority\"] || \"P1\" }}</p>\n\n<p><b>GitHub:</b>\n<a href=\"{{ $node[\"Create an issue\"].json[\"html_url\"] }}\">#{{ $node[\"Create an issue\"].json[\"number\"] }}</a>\n</p>\n\n{{ $node[\"Prepare Github Issue\"].json[\"attachmentsMd\"] || \"\" }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        3760,
+        208
+      ],
+      "id": "2c2e1edf-1312-48b1-ab56-ae6a5ebaa67f",
+      "name": "Critical Alert Email",
+      "webhookId": "aaacf4a3-92fb-49d6-8dc6-1c6783016e64",
+      "retryOnFail": true,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "hE9ZFzPNPq5pX7D6",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $node[\"Prepare Github Issue\"].json[\"from\"] || $node[\"Normalize Email\"].json[\"from\"] || \"manroop1111@gmail.com\" }}",
+        "subject": "=We've received your request({{ $node[\"Prepare Github Issue\"].json[\"priority\"] || \"P3\" }}): \"{{ $node[\"Prepare Github Issue\"].json[\"title\"] || $node[\"Normalize Email\"].json[\"subject\"] || \"Support request\" }}\"",
+        "message": "=<p>Hi{{ $node[\"Normalize Email\"].json[\"fromName\"] ? \" \" + $node[\"Normalize Email\"].json[\"fromName\"] : \"\" }},</p>\n\n<p>Thanks for contacting support. We’ve created a ticket for you.</p>\n\n<p><b>Ticket:</b> \n<a href=\"{{ $node[\"Create an issue\"].json[\"html_url\"] }}\">#{{ $node[\"Create an issue\"].json[\"number\"] }}</a>\n</p>\n\n<p><b>Summary</b><br/>\n{{ $node[\"Prepare Github Issue\"].json[\"summary\"] || \"(no summary provided)\" }}\n</p>\n\n<ul>\n<li><b>Category:</b> {{ $node[\"Prepare Github Issue\"].json[\"category\"] || \"unclassified\" }}</li>\n<li><b>Priority:</b> {{ $node[\"Prepare Github Issue\"].json[\"priority\"] || \"P3\" }}</li>\n<li><b>Severity:</b> {{ $node[\"Prepare Github Issue\"].json[\"severity\"] || \"unknown\" }}</li>\n</ul>\n\n<p>\nEstimated first response: \n{{ \n$node[\"Prepare Github Issue\"].json[\"priority\"] === \"P1\" ? \"within 2 hours\" : \n$node[\"Prepare Github Issue\"].json[\"priority\"] === \"P2\" ? \"within 1 business day\" : \n\"within 2 business days\" \n}}\n</p>\n\n{{ $node[\"Prepare Github Issue\"].json[\"attachmentsMd\"] || \"\" }}\n\n<p>Reply to this email to add more details. We’ll keep you updated.</p>\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        3232,
+        128
+      ],
+      "id": "83cf28f8-fdba-4e8a-97ae-13be761a1c3e",
+      "name": "Auto-Acknowledge Email",
+      "webhookId": "d26f1963-4a09-4969-a5c4-68823cb1075e",
+      "retryOnFail": true,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "hE9ZFzPNPq5pX7D6",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "addLabels",
+        "messageId": "={{ $node[\"Normalize Email\"].json[\"messageId\"] }}",
+        "labelIds": "={{ $item(0).$node[\"Set Constants (Global)\"].json[\"support_label_processed\"] }}"
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1936,
+        272
+      ],
+      "id": "6611eee8-5c3c-4adb-86ec-23654aed3c0a",
+      "name": "Add label to message",
+      "webhookId": "60b5d384-73b8-40f8-bc11-e3a11b98ec26",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "hE9ZFzPNPq5pX7D6",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "markAsRead",
+        "messageId": "={{ $node[\"Normalize Email\"].json[\"messageId\"] }}"
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2160,
+        272
+      ],
+      "id": "7667de51-4084-414b-9f77-a5b8aa135373",
+      "name": "Mark a message as read",
+      "webhookId": "4e80cd1b-ced8-48ca-ad19-394f120da2a0",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "hE9ZFzPNPq5pX7D6",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const j = $json;\n\nconst categoryToAssignee = {\nbug: 'manroop79',\nfeature: 'manroop79',\nbilling: 'manroop79',\nquestion: 'manroop79',\nother: 'manroop79',\n};\n\nconst productKeywordAssignee = [\n{ keyword: 'Acme Pro', assignee: 'manroop79' },\n{ keyword: 'Nova Cloud', assignee: 'manroop79' },\n];\n\nconst categoryToNotifyEmail = {\nbug: 'manroop1111@gmail.com',\nbilling: 'manroop1111@gmail.com',\nfeature: 'manroop1111@gmail.com',\nquestion: 'manroop1111@gmail.com',\nother: 'manroop1111@gmail.com',\n};\n\nconst mask = (s='') =>\ns.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/gi, '[email]')\n.replace(/\\b(\\+?\\d[\\d\\s\\-]{7,}\\d)\\b/g, '[phone]');\n\nlet assignee = categoryToAssignee[j.category] || 'manroop1111';\n\n// product keyword override\nconst hay = `${j.title || ''} ${j.summary || ''}`.toLowerCase();\nfor (const rule of productKeywordAssignee) {\nif (hay.includes(String(rule.keyword).toLowerCase())) {\nassignee = rule.assignee;\nbreak;\n}\n}\n\nreturn {\n...j,\nassignee,\nnotify: categoryToNotifyEmail[j.category] || 'manroop1111@gmail.com',\nsummary_public: mask(j.summary || ''),\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2368,
+        272
+      ],
+      "id": "421fc007-8fa3-44c2-8595-f5992d332ee4",
+      "name": "Routing"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        1152,
+        656
+      ],
+      "id": "cad60c6e-780f-4066-b9a4-a3913607b8c3",
+      "name": "Error Trigger"
+    },
+    {
+      "parameters": {
+        "sendTo": "=manroop1111@gmail.com",
+        "subject": "=❌ Triage failed in {{ $workflow.name }} at {{ $error.node.name }}",
+        "message": "=<p><b>Workflow:</b> {{$workflow.name}}</p>\n<p><b>Node:</b> {{$error.node.name}}</p>\n<p><b>Error:</b> {{$error.message}}</p>\n<p><b>Time:</b> {{$now}}</p>\n<p><b>Run ID:</b> {{$runId}}</p>\n\n<p><b>Last item (trimmed):</b></p>\n<pre>{{ JSON.stringify($json || {}, null, 2).slice(0, 4000) }}</pre>\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1360,
+        656
+      ],
+      "id": "141c271a-35dd-4a7b-9646-e488eddbfbec",
+      "name": "Workflow Failure",
+      "webhookId": "e5d82a5e-1688-4a95-8cac-eb9fbef77db8",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "hE9ZFzPNPq5pX7D6",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "messageId": "={{ $json.messageId }}"
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        704,
+        272
+      ],
+      "id": "3f05fd28-d5fd-4842-97c2-70974300865f",
+      "name": "Get a message",
+      "webhookId": "5126d5c6-2bcb-42a4-bd12-f8db5e7c01ef",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "hE9ZFzPNPq5pX7D6",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d5216fb9-905f-4f6a-ae08-5a3dfeb7264d",
+              "leftValue": "={{ $binary && Object.keys($binary).length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        976,
+        272
+      ],
+      "id": "9a1173d2-5536-4619-8837-fa6ffb696744",
+      "name": "IF - Has Attachments"
+    },
+    {
+      "parameters": {
+        "name": "={{ $binary.attachment_0?.fileName || 'attachment' }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "root",
+          "cachedResultName": "/ (Root folder)"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1200,
+        112
+      ],
+      "id": "7177e1c8-2262-4254-a801-ce658af9a6cb",
+      "name": "Upload file",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "jyCtUBzzDyBxIYrE",
+          "name": "Google Drive account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\njson: {\n...$json,\nattachmentsMd: '', // no attachments\n}\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1296,
+        416
+      ],
+      "id": "2117fc1d-d1aa-4b76-a75f-e10e74c70aba",
+      "name": "Build Attachments Markdown (FALSE)"
+    },
+    {
+      "parameters": {
+        "jsCode": "const link = $json.webViewLink || $json.alternateLink || $json.webContentLink || '';\nconst attachmentsMd = link ? `\\n\\n**Attachments**\\n- ${link}\\n` : '';\n\nreturn [{\njson: {\n...$json,\nattachmentsMd,\n}\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1392,
+        112
+      ],
+      "id": "59211807-ff2e-47bd-9a62-24313a7932c3",
+      "name": "Build Attachments Markdown (TRUE)"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 19
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        3456,
+        656
+      ],
+      "id": "52b65ecf-fb58-49d3-9e67-677cfbc1b0e2",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "mode": "chooseBranch"
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        3760,
+        496
+      ],
+      "id": "5b3bd5af-eccd-4736-9f1b-bbc3a8e9ce47",
+      "name": "Merge Digest Triggers"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "819164cb-37e3-4c76-af0d-cff645f2ec27",
+              "name": "owner",
+              "value": "manroop79",
+              "type": "string"
+            },
+            {
+              "id": "ca61866e-7b20-4089-bc37-dc408a700400",
+              "name": "repo",
+              "value": "ai-support-triage",
+              "type": "string"
+            },
+            {
+              "id": "c7751838-4cb1-4243-b6c5-f5af2ba647ee",
+              "name": "support_label_processed",
+              "value": "Label_6667288669160595886",
+              "type": "string"
+            },
+            {
+              "id": "5ab73776-5917-46d2-907e-7d909b887464",
+              "name": "alert_recipient",
+              "value": "manroop111@gmail.com",
+              "type": "string"
+            },
+            {
+              "id": "96f2bc34-3b33-4539-8080-b4aba139aa7e",
+              "name": "digest_timezone",
+              "value": "Asia/Kolkata",
+              "type": "string"
+            },
+            {
+              "id": "3f1905c5-8ac2-4488-ab8f-3e79ba0c15cf",
+              "name": "digest_hour",
+              "value": 19,
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1712,
+        272
+      ],
+      "id": "3fe848a7-a62d-4b90-b28c-147eaf45f545",
+      "name": "Set Constants (Global)"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "e0726e91-31f7-4d8b-97dd-b8ad5dbc72a1",
+              "name": "=title",
+              "value": "={{ $node[\"Code in JavaScript1\"].json[\"title\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "0dcd80a0-3e3d-4cd9-8f82-889cbda87d8f",
+              "name": "summary",
+              "value": "={{ $node[\"Code in JavaScript1\"].json[\"summary\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "9e5afcff-c033-4481-a77b-880f5d984b36",
+              "name": "category",
+              "value": "={{ $node[\"Code in JavaScript1\"].json[\"category\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "c21b2677-3456-4e59-8704-1acb74ae5f9e",
+              "name": "severity",
+              "value": "={{ $node[\"Code in JavaScript1\"].json[\"severity\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "2116b6d9-2660-4e3a-961f-e898b6dbed89",
+              "name": "priority",
+              "value": "={{ $node[\"Code in JavaScript1\"].json[\"priority\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "3171d930-7d22-47b6-a025-906928e9a201",
+              "name": "attachmentsMd",
+              "value": "={{$node[\"Build Attachments Markdown (FALSE)\"].json[\"attachmentsMd\"]\n|| \"\"}}\n",
+              "type": "string"
+            },
+            {
+              "id": "87b20980-1b36-436a-b592-1a9c3f1a26a0",
+              "name": "from",
+              "value": "={{ $node[\"Normalize Email\"].json[\"from\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "85b179d2-00dc-47a9-9ddb-5993a2faefe3",
+              "name": "emailSubject",
+              "value": "={{ $node[\"Normalize Email\"].json[\"subject\"] }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2576,
+        272
+      ],
+      "id": "fc96458f-3272-43d4-991e-2d9612464161",
+      "name": "Prepare Github Issue"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "repository",
+        "operation": "get",
+        "owner": {
+          "__rl": true,
+          "value": "manroop79",
+          "mode": "name"
+        },
+        "repository": {
+          "__rl": true,
+          "value": "triage-test",
+          "mode": "name"
+        }
+      },
+      "type": "n8n-nodes-base.github",
+      "typeVersion": 1.1,
+      "position": [
+        2800,
+        272
+      ],
+      "id": "e057b225-1ab8-463b-88da-6b68b5c61537",
+      "name": "Get a repository",
+      "webhookId": "0a9cd352-198f-48e6-92ad-dc746ce2f45d",
+      "credentials": {
+        "githubOAuth2Api": {
+          "id": "BpAzAilqFEGMZ05Y",
+          "name": "GitHub account 2"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Get a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Basic LLM Chain": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Email": {
+      "main": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create an issue": {
+      "main": [
+        [
+          {
+            "node": "Append or update row in sheet",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Auto-Acknowledge Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append or update row in sheet": {
+      "main": [
+        [
+          {
+            "node": "IF - Critical Priority",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize Daily Tickets": {
+      "main": [
+        [
+          {
+            "node": "Send Daily Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Critical Priority": {
+      "main": [
+        [
+          {
+            "node": "Critical Alert Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge Digest Triggers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get row(s) in sheet": {
+      "main": [
+        [
+          {
+            "node": "Summarize Daily Tickets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add label to message": {
+      "main": [
+        [
+          {
+            "node": "Mark a message as read",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark a message as read": {
+      "main": [
+        [
+          {
+            "node": "Routing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Routing": {
+      "main": [
+        [
+          {
+            "node": "Prepare Github Issue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Workflow Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get a message": {
+      "main": [
+        [
+          {
+            "node": "IF - Has Attachments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Has Attachments": {
+      "main": [
+        [
+          {
+            "node": "Upload file",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Attachments Markdown (FALSE)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload file": {
+      "main": [
+        [
+          {
+            "node": "Build Attachments Markdown (TRUE)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Attachments Markdown (FALSE)": {
+      "main": [
+        [
+          {
+            "node": "Set Constants (Global)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Attachments Markdown (TRUE)": {
+      "main": [
+        [
+          {
+            "node": "Set Constants (Global)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Merge Digest Triggers",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Digest Triggers": {
+      "main": [
+        [
+          {
+            "node": "Get row(s) in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Constants (Global)": {
+      "main": [
+        [
+          {
+            "node": "Add label to message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Github Issue": {
+      "main": [
+        [
+          {
+            "node": "Get a repository",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get a repository": {
+      "main": [
+        [
+          {
+            "node": "Create an issue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "351fe4c6-df1b-46c9-90b2-d294dc732c7c",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "6ad8d9d814992b2ab6542bbbb4e24872de598547fddf4585947b2b9be976e492"
+  },
+  "id": "css2rcyFFu8u26ns",
+  "tags": []
+}
