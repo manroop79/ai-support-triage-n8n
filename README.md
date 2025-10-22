@@ -69,15 +69,6 @@ _Body:_ Includes category, severity, and GitHub link.
 
 ---
 
-## 🌟 Portfolio Highlights
-
-- End-to-end automation integrating AI + DevOps tools. 
-- Clean modular design with readable node names. 
-- Tested for branching logic (critical alerts, non-critical digests). 
-- Demonstrates practical workflow orchestration using n8n.
-
----
-
 ## 📤 Export
 
 You can import the same workflow by using this JSON file: 
