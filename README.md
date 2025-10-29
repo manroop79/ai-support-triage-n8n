@@ -18,13 +18,6 @@ This n8n workflow automates a full support pipeline:
 
 ---
 
-## 📸 Visual Preview
-
-![Workflow Overview](./screenshots/workflow-full.png)
-![GitHub Issue](./screenshots/github-issue.png)
-
----
-
 ## ⚙️ Tech Stack
 
 - **n8n Cloud**
